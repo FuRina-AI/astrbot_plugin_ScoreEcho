@@ -9,7 +9,7 @@
   "endpoint": {
     "description": "API Endpoint",
     "type": "string",
-    "hint": "评分API的完整URL",
+    "hint": "小维评分API的完整URL",
     "default": "https://scoreecho.loping151.site/score"
   }
 }
