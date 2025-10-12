@@ -1,0 +1,5 @@
+name: "astrbot_plugin_echoscore"
+author: "timetetng&xw"
+description: "通过截图识别《鸣潮》声骸并进行评分。支持直接发送或引用图片。"
+version: "1.0.0"
+repo_url: "https://github.com/timetetng/astrbot_plugin_echoscore" # 请替换为您的仓库地址

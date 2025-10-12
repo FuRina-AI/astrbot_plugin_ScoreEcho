@@ -1,0 +1,15 @@
+{
+  "xwtoken": {
+    "description": "小维API Token",
+    "type": "string",
+    "hint": "请向小维申请你的API Token",
+    "obvious_hint": true,
+    "default": "your_token_here"
+  },
+  "endpoint": {
+    "description": "API Endpoint",
+    "type": "string",
+    "hint": "评分API的完整URL",
+    "default": "https://scoreecho.loping151.site/score"
+  }
+}
