@@ -39,7 +39,7 @@ async def get_image_from_direct_event(event: AstrMessageEvent) -> List[Comp.Imag
     "astrbot_plugin_echoscore",
     "loping151 & timetetng",
     "基于loping151识别《鸣潮》声骸评分API的astrbot插件，提供LLM交互和指令两种使用方式",
-    "3.0.0", 
+    "3.0.1", 
     "https://github.com/timetetng/astrbot_plugin_echoscore"
 )
 class ScoreEchoPlugin(Star):
@@ -183,25 +183,34 @@ class ScoreEchoPlugin(Star):
 
     # --- 指令层 ---
     @filter.command("评分", alias={'声骸', '生蚝'})
-    async def score_command_handler(self, event: AstrMessageEvent):
-        command_str = event.message_str.strip()        
+    async def score_command_handler(self, event: AstrMessageEvent, role: str, cost: str, main_stat: Optional[str] = None):
+        """
+        为声骸进行评分。指令格式: /评分 <角色名> <cost> [主词条]
+        """
         images = await self._get_images_from_context(event)
 
         if not images:
             yield event.plain_result("请在发送命令的同时附带声骸截图，或回复包含截图的消息。")
             return
+        # 1. 解析角色别名
+        resolved_role = self._resolve_role_alias(role)
+        
+        # 2. 将解析后的参数重新组合成API需要的字符串
+        parts = [p for p in [resolved_role, cost, main_stat] if p]
+        command_str = " ".join(parts)
+
+        # 3. 清理缓存并开始处理
         umo = event.unified_msg_origin
         if umo in self.context_image_cache:
             del self.context_image_cache[umo]
             logger.info(f"指令任务开始，已清除会话 {umo} 的上下文缓存。")
 
-        yield event.plain_result(f"收到 {len(images)} 张图片，正在分析中...")
         result = await self._perform_scoring(command_str, images)
+        
         if result["success"]:
             yield event.chain_result([Comp.Image(file=f"base64://{result['image_base64']}")])
         else:
             yield event.plain_result(f"评分失败了：\n{result['error']}")
-
     # --- LLM 工具层 ---
     @filter.llm_tool(name="score_wuthering_waves_echo")
     async def score_wuthering_waves_echo(self, event: AstrMessageEvent, role: Optional[str] = None, 
@@ -236,9 +245,9 @@ class ScoreEchoPlugin(Star):
         
         if result["success"]:
             await event.send(event.chain_result([Comp.Image(file=f"base64://{result['image_base64']}")]))
-            return "任务成功，评分结果图片已发送给用户。"
+            return f"{resolved_role}的声骸评分结果图片已发送给用户。"
         else:
-            return f"评分失败了，请将以下原因告知用户：{result['error']}"
+            return f"{resolved_role}的声骸评分失败了，请将以下原因告知用户：{result['error']}"
 
     async def terminate(self):
         await self.http_client.aclose()
