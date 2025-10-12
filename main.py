@@ -1,214 +1,245 @@
 import base64
 import httpx
+import time
+import asyncio
+import json
 from io import BytesIO
 from PIL import Image
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 import astrbot.api.message_components as Comp
 
-async def get_image_from_event(event: AstrMessageEvent) -> List[Comp.Image]:
-    """
-    从事件中提取图片组件。
-    支持直接发送的图片和引用回复中的图片。
-    """
+async def get_image_from_direct_event(event: AstrMessageEvent) -> List[Comp.Image]:
+    """[直接模式] 从当前事件中提取所有图片组件，这是最高优先级的图片来源。"""
     images = []
-    
-    # 从当前消息中直接提取图片
     if hasattr(event, 'message_obj') and event.message_obj and hasattr(event.message_obj, 'message'):
         for component in event.message_obj.message:
             if isinstance(component, Comp.Image):
                 images.append(component)
-            # 处理引用/回复中的图片
             elif isinstance(component, Comp.Reply):
                 replied_chain = getattr(component, 'chain', None)
                 if replied_chain:
                     for reply_comp in replied_chain:
                         if isinstance(reply_comp, Comp.Image):
-                            logger.info("从引用消息中获取到图片")
                             images.append(reply_comp)
-    
-    # 去重
     unique_images = []
     seen = set()
     for img in images:
-        identifier = img.url or img.file or id(img.raw)
+        identifier = img.url or img.file
         if identifier and identifier not in seen:
+            unique_images.append(img); seen.add(identifier)
+        elif not identifier:
             unique_images.append(img)
-            seen.add(identifier)
-            
     return unique_images
-
 
 @register(
     "astrbot_plugin_echoscore",
     "loping151 & timetetng",
     "基于loping151识别《鸣潮》声骸评分API的astrbot插件，提供LLM交互和指令两种使用方式",
-    "2.0.1", # 版本号迭代
+    "3.0.0", 
     "https://github.com/timetetng/astrbot_plugin_echoscore"
 )
 class ScoreEchoPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        # 使用 httpx.AsyncClient 作为推荐的异步请求库
         self.http_client = httpx.AsyncClient(timeout=30.0)
+        
+        # --- 从配置初始化缓存和别名设置 ---
+        self.enable_context_cache = self.config.get("enable_context_cache", True)
+        self.context_cache_size = self.config.get("context_cache_size", 3)
+        self.enable_alias_mapping = self.config.get("enable_alias_mapping", False)
+        self.alias_file_path = self.config.get("alias_file_path", "")
+        self.alias_map: Dict[str, str] = {}
+        
+        self.submission_window_seconds = 60
+        self.context_image_cache: Dict[str, Tuple[List[Comp.Image], float]] = {}
+        
+        logger.info(f"鸣潮声骸评分插件加载成功")
+        logger.info(f"上下文图片缓存: {'已开启' if self.enable_context_cache else '已关闭'}, 缓存数量: {self.context_cache_size}")
+        logger.info(f"角色别名映射: {'已开启' if self.enable_alias_mapping else '已关闭'}")
+
+        # --- 加载别名文件并构建反向映射表 ---
+        if self.enable_alias_mapping and self.alias_file_path:
+            try:
+                with open(self.alias_file_path, 'r', encoding='utf-8') as f:
+                    alias_data = json.load(f)
+                
+                # 构建 {别名: 本名} 的反向映射，方便快速查找
+                for canonical_name, aliases in alias_data.items():
+                    for alias in aliases:
+                        self.alias_map[alias.lower()] = canonical_name # 使用小写以忽略大小写
+                
+                logger.info(f"成功加载角色别名文件，共构建 {len(self.alias_map)} 条别名映射。")
+
+            except FileNotFoundError:
+                logger.error(f"角色别名文件未找到，路径: {self.alias_file_path}")
+            except json.JSONDecodeError:
+                logger.error(f"角色别名文件格式错误，请检查是否为有效的JSON文件: {self.alias_file_path}")
+            except Exception as e:
+                logger.error(f"加载角色别名文件时发生未知错误: {e}")
+        elif self.enable_alias_mapping:
+            logger.warning("已启用角色别名映射，但未提供别名文件路径。")
+
+
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=-1)
+    async def on_any_message_for_image_cache(self, event: AstrMessageEvent):
+        """监听并缓存所有图片，仅为无直接图片的上下文调用提供支持。"""
+        if not self.enable_context_cache:
+            return
+
+        umo = event.unified_msg_origin
+        images_in_message = [comp for comp in event.message_obj.message if isinstance(comp, Comp.Image)]
+        
+        if images_in_message:
+            now = time.time()
+            cached_images, last_update_time = self.context_image_cache.get(umo, ([], 0))
+            if now - last_update_time > self.submission_window_seconds:
+                cached_images = []
+            cached_images.extend(images_in_message)
+            if self.context_cache_size > 0:
+                cached_images = cached_images[-self.context_cache_size:]
+            else:
+                cached_images = []
+
+            self.context_image_cache[umo] = (cached_images, now)
+            if cached_images:
+                logger.info(f"[EchoScore Cache] 已更新会话 {umo} 的上下文缓存，当前共 {len(cached_images)} 张图片。")
+
+
+    async def _get_images_from_context(self, event: AstrMessageEvent) -> List[Comp.Image]:
+        images = await get_image_from_direct_event(event)
+        if images:
+            logger.info(f"图片获取：从直接消息/引用中找到 {len(images)} 张图片。")
+            return images
+
+        if not images and self.enable_context_cache:
+            umo = event.unified_msg_origin
+            cached_data = self.context_image_cache.get(umo)
+            if cached_data:
+                images = cached_data[0]
+                logger.info(f"图片获取：从上下文缓存为会话 {umo} 找到了 {len(images)} 张图片。")
+        
+        return images
+
 
     async def _perform_scoring(self, command_str: str, images: List[Comp.Image]) -> Dict[str, Any]:
-        """
-        执行评分的核心逻辑，包括图片处理和API请求。
-        返回一个包含结果或错误的字典。
-        """
         images_b64 = []
         try:
             for img_comp in images:
-                image_bytes = None
-                if img_comp.url:
-                    resp = await self.http_client.get(img_comp.url)
-                    resp.raise_for_status()
-                    image_bytes = resp.content
-                elif img_comp.file:
-                    with open(img_comp.file, 'rb') as f:
-                        image_bytes = f.read()
-                elif img_comp.raw:
-                    image_bytes = img_comp.raw
-                else:
-                    continue
-                
-                # 图片压缩处理
-                MAX_SIZE_BYTES = 2 * 1024 * 1024  # 2MB
+                image_b64_str = await img_comp.convert_to_base64()
+                if not image_b64_str: continue
+                image_bytes = base64.b64decode(image_b64_str)
+                MAX_SIZE_BYTES = 2 * 1024 * 1024
                 with Image.open(BytesIO(image_bytes)) as img:
-                    if img.mode not in ("RGB"):
-                        img = img.convert("RGB")
-
+                    if img.mode != "RGB": img = img.convert("RGB")
                     output_buffer = BytesIO()
                     quality = 95
-                    
-                    # 循环压缩直到小于目标大小
                     while quality > 10:
-                        output_buffer.seek(0)
-                        output_buffer.truncate()
+                        output_buffer.seek(0); output_buffer.truncate()
                         img.save(output_buffer, format="WEBP", quality=quality)
-                        if output_buffer.tell() < MAX_SIZE_BYTES:
-                            break
+                        if output_buffer.tell() < MAX_SIZE_BYTES: break
                         quality -= 5
-                    
                     compressed_image_bytes = output_buffer.getvalue()
-
                 images_b64.append(base64.b64encode(compressed_image_bytes).decode('utf-8'))
-        
-        except httpx.RequestError as e:
-            logger.error(f"下载图片失败: {e}")
-            return {"success": False, "error": f"图片下载失败: {e}"}
-        except Exception as e:
-            logger.error(f"处理图片时发生错误: {e}")
-            return {"success": False, "error": f"图片处理失败: {e}"}
-            
-        if not images_b64:
-            return {"success": False, "error": "未能成功处理任何有效图片。"}
-
-        # 从配置中获取 Token 和 API 地址
+        except Exception as e: return {"success": False, "error": f"图片处理失败: {e}"}
+        if not images_b64: return {"success": False, "error": "未能成功处理任何有效图片。"}
         api_token = self.config.get("xwtoken", "your_token_here")
+        if api_token == "your_token_here": return {"success": False, "error": "请在插件配置中填写你的 xwtoken！"}
         api_endpoint = self.config.get("endpoint", "https://scoreecho.loping151.site/score")
-
-        if api_token == "your_token_here":
-            return {"success": False, "error": "请在插件配置中填写你的 xwtoken！"}
-
-        headers = {
-            "Authorization": f"Bearer {api_token}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "command_str": command_str,
-            "images_base64": images_b64
-        }
-        
+        headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
+        payload = {"command_str": command_str, "images_base64": images_b64}
         try:
             response = await self.http_client.post(api_endpoint, headers=headers, json=payload)
             response.raise_for_status()
             data = response.json()
-            
-            result_image_b64 = data.get("result_image_base64")
-            if result_image_b64:
-                return {"success": True, "image_base64": result_image_b64}
-            else:
-                message = data.get("message", "API未能生成图片，可能是不支持的图片格式或内容。")
-                return {"success": False, "error": message}
+            if data.get("result_image_base64"): return {"success": True, "image_base64": data["result_image_base64"]}
+            else: return {"success": False, "error": data.get("message", "API未能生成图片。")}
+        except Exception as e: return {"success": False, "error": f"API请求或处理时发生错误: {e}"}
 
-        except httpx.HTTPStatusError as e:
-            error_msg = f"API请求失败，服务器返回错误码: {e.response.status_code}"
-            try:
-                error_detail = e.response.json().get("detail", "无详细信息")
-                error_msg += f"\n错误信息: {error_detail}"
-            except Exception:
-                error_msg += f"\n原始响应: {e.response.text}"
-            logger.error(error_msg)
-            return {"success": False, "error": error_msg}
-        except httpx.RequestError as e:
-            logger.exception(f"连接评分服务器失败: {e}")
-            return {"success": False, "error": f"网络请求失败: {e}"}
-        except Exception as e:
-            logger.exception(f"执行评分时发生未知错误: {e}")
-            return {"success": False, "error": f"未知错误: {e}"}
-
-    @filter.command("评分", alias={'echo', 'score'})
-    async def score_command_handler(
-        self, event: AstrMessageEvent, role: Optional[str] = None, 
-        cost: Optional[str] = None, main_stat: Optional[str] = None
-    ):
-        """
-        处理声骸评分请求的指令。
-        指令: /评分 [角色名] [cost] [主词条] (所有参数可选)
-        """
-        command_str = event.message_str.strip().split("评分", 1)[-1].strip()
+    @filter.command("清空评分缓存")
+    async def clear_score_cache_command(self, event: AstrMessageEvent):
+        umo = event.unified_msg_origin
+        if umo in self.context_image_cache:
+            del self.context_image_cache[umo]
+            yield event.plain_result("当前会話的声骸评分图片缓存已清空！")
+        else:
+            yield event.plain_result("当前会話没有需要清空的缓存哦~")
+    
+    # --- 辅助函数，用于解析角色别名 ---
+    def _resolve_role_alias(self, role_input: Optional[str]) -> Optional[str]:
+        """根据加载的别名表解析角色名"""
+        if not self.enable_alias_mapping or not role_input:
+            return role_input # 如果功能关闭或输入为空，直接返回原值
         
-        images = await get_image_from_event(event)
+        # 使用.get()方法，如果找不到别名，则返回原输入值
+        resolved_name = self.alias_map.get(role_input.lower(), role_input)
+        if resolved_name != role_input:
+            logger.info(f"角色别名解析: '{role_input}' -> '{resolved_name}'")
+        return resolved_name
+
+    # --- 指令层 ---
+    @filter.command("评分", alias={'声骸', '生蚝'})
+    async def score_command_handler(self, event: AstrMessageEvent):
+        command_str = event.message_str.strip()        
+        images = await self._get_images_from_context(event)
+
         if not images:
-            yield event.plain_result("请在发送命令的同时附带需要评分的声骸截图，或者回复一张声骸截图哦~")
+            yield event.plain_result("请在发送命令的同时附带声骸截图，或回复包含截图的消息。")
             return
+        umo = event.unified_msg_origin
+        if umo in self.context_image_cache:
+            del self.context_image_cache[umo]
+            logger.info(f"指令任务开始，已清除会话 {umo} 的上下文缓存。")
 
-        yield event.plain_result(f"收到 {len(images)} 张图片，正在分析中，请稍候...")
-        
+        yield event.plain_result(f"收到 {len(images)} 张图片，正在分析中...")
         result = await self._perform_scoring(command_str, images)
-
         if result["success"]:
-            base64_uri = f"base64://{result['image_base64']}"
-            yield event.chain_result([Comp.Image(file=base64_uri)])
+            yield event.chain_result([Comp.Image(file=f"base64://{result['image_base64']}")])
         else:
             yield event.plain_result(f"评分失败了：\n{result['error']}")
 
+    # --- LLM 工具层 ---
     @filter.llm_tool(name="score_wuthering_waves_echo")
-    async def score_wuthering_waves_echo(
-        self, event: AstrMessageEvent, role: Optional[str] = None, 
-        cost: Optional[str] = None, main_stat: Optional[str] = None
-    ) -> str:
+    async def score_wuthering_waves_echo(self, event: AstrMessageEvent, role: Optional[str] = None, 
+                                        cost: Optional[str] = None, main_stat: Optional[str] = None) -> str:
         """
-        对《鸣潮》游戏中的声骸截图进行评分。你必须从当前对话或用户的引用中获取图片来进行评分。
+        请在用户发送询问有关声骸评分时使用。本工具可以处理单张或多张图片，支持对比评分任务。
+        它会自动从当前对话、用户的引用或上文内容中累积获取所有相关图片。
+        用户往往会说xx1c、xx3c等来指定参数，其中xx是角色名，1c/3c/4c是cost。
         Args:
-            role (string): 角色中文名，例如'忌炎'或'吟霖'。如果用户没有指定，则忽略。
+            role (string): 角色中文名。如果用户没有指定，则忽略。
             cost (string): 声骸的COST值，例如'4c', '3c', '1c'。如果用户没有指定，则忽略。
             main_stat (string): 声骸的主词条，例如'暴击'或'攻击'。如果用户没有指定，则忽略。
         """
         logger.info(f"LLM tool 'score_wuthering_waves_echo' called with: role={role}, cost={cost}, main_stat={main_stat}")
         
-        parts = [p for p in [role, cost, main_stat] if p]
-        command_str = " ".join(parts)
-        
-        images = await get_image_from_event(event)
-        if not images:
-            return "评分失败，因为我没有在当前对话中找到任何图片。请提醒用户需要发送一张声骸截图。"
-        
-        result = await self._perform_scoring(command_str, images)
+        images = await self._get_images_from_context(event)
 
+        if not images:
+            return "评分失败，我没有在用户的消息或上下文中找到任何图片。请提醒用户需要发送一张声骸截图。"
+        
+        umo = event.unified_msg_origin
+        if umo in self.context_image_cache:
+            del self.context_image_cache[umo]
+            logger.info(f"LLM任务开始，已清除会话 {umo} 的上下文缓存。")
+        
+        # --- 解析角色别名 ---
+        resolved_role = self._resolve_role_alias(role)
+        
+        parts = [p for p in [resolved_role, cost, main_stat] if p]
+        command_str = " ".join(parts)
+        result = await self._perform_scoring(command_str, images)
+        
         if result["success"]:
-            base64_uri = f"base64://{result['image_base64']}"
-            await event.send(event.chain_result([Comp.Image(file=base64_uri)]))
-            return "评分图片已成功发送给用户。"
+            await event.send(event.chain_result([Comp.Image(file=f"base64://{result['image_base64']}")]))
+            return "任务成功，评分结果图片已发送给用户。"
         else:
             return f"评分失败了，请将以下原因告知用户：{result['error']}"
 
     async def terminate(self):
         await self.http_client.aclose()
-        logger.info("ScoreEchoPlugin http client closed.")
+        logger.info("鸣潮声骸评分插件已关闭")

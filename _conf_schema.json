@@ -11,5 +11,29 @@
     "type": "string",
     "hint": "小维评分API的完整URL",
     "default": "https://scoreecho.loping151.site/score"
+  },
+  "enable_context_cache": {
+    "description": "是否开启上下文图片缓存",
+    "type": "bool",
+    "hint": "开启后，插件会缓存近期消息中的图片，用于后续没有直接提供图片的评分指令或LLM调用。",
+    "default": true
+  },
+  "context_cache_size": {
+    "description": "上下文缓存图片数量",
+    "type": "int",
+    "hint": "设置在会话上下文中缓存的最多图片数量。仅在“开启上下文图片缓存”时生效。",
+    "default": 2
+  },
+  "enable_alias_mapping": {
+    "description": "是否启用自定义角色别名",
+    "type": "bool",
+    "hint": "开启后，插件将根据提供的别名文件，将用户输入的角色别名转换为标准角色名再进行查询。",
+    "default": false
+  },
+  "alias_file_path": {
+    "description": "角色别名文件路径",
+    "type": "string",
+    "hint": "请输入wwuid角色别名JSON文件的绝对路径。仅在“启用自定义角色别名”开启时生效。",
+    "default": "gsuid_core/plugins/WutheringWavesUID/WutheringWavesUID/utils/alias/char_alias.json"
   }
 }
