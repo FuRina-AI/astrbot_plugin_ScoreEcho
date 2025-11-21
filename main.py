@@ -149,7 +149,7 @@ class ScoreEchoPlugin(Star):
         if not images_b64: return {"success": False, "error": "未能成功处理任何有效图片。"}
         api_token = self.config.get("xwtoken", "your_token_here")
         if api_token == "your_token_here": return {"success": False, "error": "请在插件配置中填写你的 xwtoken！"}
-        api_endpoint = self.config.get("endpoint", "https://scoreecho.loping151.site/score")
+        api_endpoint = self.config.get("endpoint", "https://scoreecho.Loping151.site/score")
         headers = {"Authorization": f"Bearer {api_token}", "Content-Type": "application/json"}
         payload = {"command_str": command_str, "images_base64": images_b64}
         try:
