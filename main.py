@@ -19,11 +19,8 @@ from astrbot.api.star import Context, Star, register
 async def get_image_from_direct_event(event: AstrMessageEvent) -> list[Comp.Image]:
     """从当前事件中提取所有图片组件，这是最高优先级的图片来源。"""
     images = []
-    if (
-        hasattr(event, "message_obj")
-        and event.message_obj
-        and hasattr(event.message_obj, "message")
-    ):
+    try:
+        # 尝试直接访问 event.message_obj.message
         for component in event.message_obj.message:
             if isinstance(component, Comp.Image):
                 images.append(component)
@@ -33,6 +30,9 @@ async def get_image_from_direct_event(event: AstrMessageEvent) -> list[Comp.Imag
                     for reply_comp in replied_chain:
                         if isinstance(reply_comp, Comp.Image):
                             images.append(reply_comp)
+    except AttributeError:
+        pass
+
     unique_images = []
     seen = set()
     for img in images:
@@ -223,7 +223,7 @@ class ScoreEchoPlugin(Star):
         else:
             # 有 xwtoken 走认证端点
             api_endpoint = self.config.get(
-                "endpoint", "https://scoreecho.Loping151.site/score"
+                "endpoint", "https://scoreecho.loping151.site/score"
             )
             headers = {
                 "Authorization": f"Bearer {api_token}",
@@ -282,7 +282,7 @@ class ScoreEchoPlugin(Star):
         return resolved_name
 
     # --- LLM 钩子 (实现无空格指令解析) ---
-    @filter.on_llm_request(priority=1919810) # 设置一个高优先级，确保拦截 hook
+    @filter.on_llm_request(priority=1919810)  # 设置一个高优先级，确保拦截 hook
     async def on_llm_request_handler(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
