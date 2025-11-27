@@ -184,7 +184,7 @@ class ScoreEchoPlugin(Star):
             return {"success": False, "error": "未能成功处理任何有效图片。"}
 
         api_token = self.config.get("xwtoken", "your_token_here")
-        
+
         # 判断是否使用 WebAPI
         if not api_token or api_token == "your_token_here":
             # 使用 WebAPI 端点
@@ -196,9 +196,11 @@ class ScoreEchoPlugin(Star):
                 "Referer": "https://scoreecho.loping151.site/",
                 "Origin": "https://scoreecho.loping151.site",
                 "X-Web-Request": "true",
-                "Accept": "*/*"
+                "Accept": "*/*",
             }
-            logger.warning("未配置有效的 xwtoken，正在使用 WebAPI 模式，请注意速率限制。")
+            logger.warning(
+                "未配置有效的 xwtoken，正在使用 WebAPI 模式，请注意速率限制。"
+            )
         else:
             # 有 xwtoken 走认证端点
             api_endpoint = self.config.get(
@@ -210,7 +212,7 @@ class ScoreEchoPlugin(Star):
             }
 
         payload = {"command_str": command_str, "images_base64": images_b64}
-        
+
         try:
             response = await self.http_client.post(
                 api_endpoint, headers=headers, json=payload
@@ -232,7 +234,10 @@ class ScoreEchoPlugin(Star):
                     "success": False,
                     "error": "当前没有配置xwtoken或已失效，WebAPI 已达到请求速率限制，请等待或申请xwtoken。",
                 }
-            return {"success": False, "error": f"API请求返回错误状态码: {e.response.status_code} - {e}"}
+            return {
+                "success": False,
+                "error": f"API请求返回错误状态码: {e.response.status_code} - {e}",
+            }
         except Exception as e:
             return {"success": False, "error": f"API请求或处理时发生错误: {e}"}
 
