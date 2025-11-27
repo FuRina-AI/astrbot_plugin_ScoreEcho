@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import re
@@ -48,7 +49,7 @@ async def get_image_from_direct_event(event: AstrMessageEvent) -> list[Comp.Imag
     "astrbot_plugin_echoscore",
     "loping151 & timetetng",
     "基于loping151识别《鸣潮》声骸评分API的astrbot插件，提供LLM交互和指令两种使用方式",
-    "3.1.2",
+    "3.1.3",
     "https://github.com/timetetng/astrbot_plugin_echoscore",
 )
 class ScoreEchoPlugin(Star):
@@ -150,38 +151,56 @@ class ScoreEchoPlugin(Star):
 
         return images
 
+    @staticmethod
+    def _process_image(image_bytes: bytes) -> bytes:
+        """
+        处理图片：转换RGB、调整大小和压缩。
+        将被 asyncio.to_thread 放到线程池中执行，避免阻塞主线程。
+        """
+        MAX_SIZE_BYTES = 2 * 1024 * 1024
+        with Image.open(BytesIO(image_bytes)) as img:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            output_buffer = BytesIO()
+            quality = 95
+            while quality > 10:
+                output_buffer.seek(0)
+                output_buffer.truncate()
+                img.save(output_buffer, format="WEBP", quality=quality)
+                if output_buffer.tell() < MAX_SIZE_BYTES:
+                    break
+                quality -= 5
+            return output_buffer.getvalue()
+
     async def _perform_scoring(
         self, command_str: str, images: list[Comp.Image]
     ) -> dict[str, Any]:
         images_b64 = []
         try:
+            # 1. 准备图片处理任务
+            tasks = []
             for img_comp in images:
                 image_b64_str = await img_comp.convert_to_base64()
                 if not image_b64_str:
                     continue
                 image_bytes = base64.b64decode(image_b64_str)
-                MAX_SIZE_BYTES = 2 * 1024 * 1024
-                with Image.open(BytesIO(image_bytes)) as img:
-                    if img.mode != "RGB":
-                        img = img.convert("RGB")
-                    output_buffer = BytesIO()
-                    quality = 95
-                    while quality > 10:
-                        output_buffer.seek(0)
-                        output_buffer.truncate()
-                        img.save(output_buffer, format="WEBP", quality=quality)
-                        if output_buffer.tell() < MAX_SIZE_BYTES:
-                            break
-                        quality -= 5
-                    compressed_image_bytes = output_buffer.getvalue()
-                images_b64.append(
-                    base64.b64encode(compressed_image_bytes).decode("utf-8")
-                )
+                tasks.append(asyncio.to_thread(self._process_image, image_bytes))
+
+            if not tasks:
+                return {"success": False, "error": "未能成功获取任何有效图片。"}
+
+            # 2. 并发执行所有图片处理任务
+            processed_images_bytes = await asyncio.gather(*tasks)
+
+            # 3. 将处理后的结果编码回 base64
+            for compressed_bytes in processed_images_bytes:
+                images_b64.append(base64.b64encode(compressed_bytes).decode("utf-8"))
+
         except Exception as e:
             return {"success": False, "error": f"图片处理失败: {e}"}
 
         if not images_b64:
-            return {"success": False, "error": "未能成功处理任何有效图片。"}
+            return {"success": False, "error": "图片处理后为空，无法评分。"}
 
         api_token = self.config.get("xwtoken", "your_token_here")
 
@@ -263,7 +282,7 @@ class ScoreEchoPlugin(Star):
         return resolved_name
 
     # --- LLM 钩子 (实现无空格指令解析) ---
-    @filter.on_llm_request(priority=1919810)
+    @filter.on_llm_request(priority=1919810) # 设置一个高优先级，确保拦截 hook
     async def on_llm_request_handler(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
