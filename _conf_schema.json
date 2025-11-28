@@ -2,9 +2,9 @@
   "xwtoken": {
     "description": "小维API Token",
     "type": "string",
-    "hint": "请向小维申请你的API Token。如果留空或保持默认，将使用WebAPI进行评分（有速率限制）。",
+    "hint": "请向小维(github@Loping151)申请你的API Token。",
     "obvious_hint": true,
-    "default": "your_token_here"
+    "default": ""
   },
   "endpoint": {
     "description": "API Endpoint",
