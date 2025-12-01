@@ -30,7 +30,7 @@
 
 2.  **获取 Token**：
 
-      - 此插件需要 `xwtoken` 才能访问评分API。请联系原作者 **小维 (Loping151)** 申请你的 Token。
+      - 此插件需要 `xwtoken` 才能访问评分API。请联系原作者 **小维([Loping151](https://github.com/Loping151))** 申请你的 Token。
 
 3.  **配置插件**：
 
