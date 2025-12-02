@@ -49,7 +49,7 @@ async def get_image_from_direct_event(event: AstrMessageEvent) -> list[Comp.Imag
     "astrbot_plugin_echoscore",
     "loping151 & timetetng",
     "基于loping151识别《鸣潮》声骸评分API的astrbot插件，提供LLM交互和指令两种使用方式",
-    "3.1.4",
+    "3.1.5",
     "https://github.com/timetetng/astrbot_plugin_echoscore",
 )
 class ScoreEchoPlugin(Star):
@@ -351,13 +351,11 @@ class ScoreEchoPlugin(Star):
         main_stat: str | None = None,
     ) -> str:
         """
-        请在用户询问有关鸣潮角色声骸评分时使用。
-        本工具可以处理单张或多张图片，支持对比评分任务。
-        用户往往会说xx1c、xx3c等来指定参数，其中xx是角色名，1c/3c/4c是cost。
+        鸣潮角色声骸评分工具，可以对声骸截图进行评分。
         Args:
-            role (string): 角色中文名。如果用户没有指定，则忽略。
-            cost (string): 声骸的COST值，例如'4c', '3c', '1c'。如果用户没有指定，则忽略。
-            main_stat (string): 声骸的主词条，例如'暴击'或'攻击'。如果用户没有指定，则忽略。
+            role (str): 角色名。如果用户没有指定，则忽略。
+            cost (str): 声骸的COST值，例如'4c', 非必需。
+            main_stat (str): 声骸的主词条，例如'暴击'或'攻击'，非必需。
         """
         logger.info(
             f"LLM tool 'score_wuthering_waves_echo' called with: role={role}, cost={cost}, main_stat={main_stat}"
@@ -386,7 +384,7 @@ class ScoreEchoPlugin(Star):
                     [Comp.Image(file=f"base64://{result['image_base64']}")]
                 )
             )
-            return f"{resolved_role}的声骸评分图片已发送，请继续和用户正常回复。"
+            return f"{resolved_role}的声骸评分成功"
         else:
             return f"{resolved_role}的声骸评分失败了，请将以下原因告知用户：{result['error']}"
 
