@@ -4,6 +4,7 @@
 
 一个为 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 设计的《鸣潮》声骸评分插件。它基于 Loping151 的声骸识别评分API，让您可以通过发送截图，以指令或与大语言模型（LLM）对话的方式，快速为您的声骸进行评分。
 
+
 ## ✨ 致谢
 
 本插件是基于 [**Loping151/ScoreEcho**](https://github.com/Loping151/ScoreEcho) 项目的 API 进行的二次开发，并适配了 AstrBot 框架。所有核心的图像识别与评分能力均由原作者提供。
@@ -49,6 +50,8 @@
 ## 📝 使用说明
 
 配置完成后，您可以通过以下两种方式使用本插件：
+
+## 如果无法评分请检查是否配置 **xwtoken** 以及 **LLM模型提供商**！！！
 
 ### 方式一：指令调用
 
