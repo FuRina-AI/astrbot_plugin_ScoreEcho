@@ -9,7 +9,7 @@
   "command_prefix": {
     "type": "string",
     "description":"命令前缀",
-    "hint":" "例如 ww / wwuid 。为空则关闭前缀触发，只保留“评分/查分/声骸/生蚝”触发。",
+    "hint":" 例如 ww / wwuid 。为空则关闭前缀触发，只保留“评分/查分/声骸/生蚝”触发。",
     "default": "ww"
   },
   "endpoint": {
