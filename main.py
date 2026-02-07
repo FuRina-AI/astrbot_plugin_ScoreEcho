@@ -16,6 +16,103 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 
 
+# --- ScoreEcho/WWUID 风格命令解析（前缀可配置） ---
+COST_RE = r"(?:(?:[134][cC])|(?:[cC][134])|(?:[134]))"
+
+
+def _normalize_cost(raw: str | None) -> str | None:
+    if not raw:
+        return None
+    s = raw.strip()
+    if not s:
+        return None
+    # 单独给了 1/3/4
+    if len(s) == 1 and s in "134":
+        return f"{s}c"
+    s = s.lower()
+    # c4/c3/c1 -> 4c/3c/1c
+    if s in ("c1", "c3", "c4"):
+        return f"{s[1]}c"
+    if s in ("1c", "3c", "4c"):
+        return s
+    return s
+
+
+def parse_prefixed_scoreecho_command(
+    text: str, prefix: str
+) -> tuple[str | None, str | None, str | None] | None:
+    """
+    支持：
+      - {prefix}评分xxx...
+      - {prefix}角色评分xxx...
+      - {prefix}角色4c / {prefix}角色c4 / {prefix}角色4
+    返回：(role, cost, main_stat) 或 None
+    """
+    if not text:
+        return None
+    t = text.strip()
+    if not t:
+        return None
+
+    # prefix 为空则不启用该解析
+    if not prefix or not prefix.strip():
+        return None
+
+    p = prefix.strip()
+    if not t.lower().startswith(p.lower()):
+        return None
+
+    body = t[len(p) :].strip()
+    if not body:
+        return None
+
+    # 1) {prefix}评分xxx...
+    m = re.match(r"^(评分|查分|声骸|生蚝)\s*(.*)$", body, re.IGNORECASE)
+    if m:
+        rest = m.group(2).strip()
+
+        # cost
+        mc = re.search(rf"({COST_RE})", rest, re.IGNORECASE)
+        cost = None
+        if mc:
+            cost = _normalize_cost(mc.group(1))
+            rest = (rest[: mc.start()] + rest[mc.end() :]).strip()
+
+        # role + main_stat
+        role = None
+        main_stat = None
+        if rest:
+            parts = rest.split(maxsplit=1)
+            role = parts[0]
+            if len(parts) > 1:
+                main_stat = parts[1].replace(" ", "")
+        return (role, cost, main_stat)
+
+    # 2) {prefix}角色评分xxx...
+    m = re.match(r"^(.+?)(评分|查分|声骸|生蚝)\s*(.*)$", body, re.IGNORECASE)
+    if m:
+        role = m.group(1).strip()
+        rest = m.group(3).strip()
+
+        mc = re.search(rf"({COST_RE})", rest, re.IGNORECASE)
+        cost = None
+        if mc:
+            cost = _normalize_cost(mc.group(1))
+            rest = (rest[: mc.start()] + rest[mc.end() :]).strip()
+
+        main_stat = rest.replace(" ", "") if rest else None
+        return (role or None, cost, main_stat)
+
+    # 3) {prefix}角色4c / {prefix}角色c4 / {prefix}角色4
+    m = re.match(rf"^(.+?)\s*({COST_RE})\s*$", body, re.IGNORECASE)
+    if m:
+        role = m.group(1).strip()
+        cost = _normalize_cost(m.group(2))
+        return (role or None, cost, None)
+
+    return None
+
+
 async def get_image_from_direct_event(event: AstrMessageEvent) -> list[Comp.Image]:
     """从当前事件中提取所有图片组件，这是最高优先级的图片来源。"""
     images = []
@@ -58,6 +155,11 @@ class ScoreEchoPlugin(Star):
         self.config = config
         self.http_client = httpx.AsyncClient(timeout=30.0)
 
+        # --- 新增：命令前缀（网页端可配置） ---
+        # AstrBot 网页控制台配置 key：command_prefix
+        # 默认 ww；若设为空字符串则关闭前缀触发，仅保留“评分/查分/声骸/生蚝”
+        self.command_prefix: str = self.config.get("command_prefix", "ww")
+
         # --- 从配置初始化缓存和别名设置 ---
         self.enable_context_cache = self.config.get("enable_context_cache", True)
         self.context_cache_size = self.config.get("context_cache_size", 3)
@@ -69,6 +171,9 @@ class ScoreEchoPlugin(Star):
         self.context_image_cache: dict[str, tuple[list[Comp.Image], float]] = {}
 
         logger.info("鸣潮声骸评分插件加载成功")
+        logger.info(
+            f"命令前缀: {repr(self.command_prefix)}（配置项: command_prefix；为空则关闭前缀触发）"
+        )
         logger.info(
             f"上下文图片缓存: {'已开启' if self.enable_context_cache else '已关闭'}, 缓存数量: {self.context_cache_size}"
         )
@@ -85,9 +190,7 @@ class ScoreEchoPlugin(Star):
                 # 构建 {别名: 本名} 的反向映射，方便快速查找
                 for canonical_name, aliases in alias_data.items():
                     for alias in aliases:
-                        self.alias_map[alias.lower()] = (
-                            canonical_name  # 使用小写以忽略大小写
-                        )
+                        self.alias_map[alias.lower()] = canonical_name
 
                 logger.info(
                     f"成功加载角色别名文件，共构建 {len(self.alias_map)} 条别名映射。"
@@ -258,53 +361,56 @@ class ScoreEchoPlugin(Star):
         if not self.enable_alias_mapping or not role_input:
             return role_input  # 如果功能关闭或输入为空，直接返回原值
 
-        # 使用.get()方法，如果找不到别名，则返回原输入值
         resolved_name = self.alias_map.get(role_input.lower(), role_input)
         if resolved_name != role_input:
             logger.info(f"角色别名解析: '{role_input}' -> '{resolved_name}'")
         return resolved_name
 
-    # --- LLM 钩子 (实现无空格指令解析) ---
-    @filter.on_llm_request(priority=1919810)  # 设置一个高优先级，确保拦截 hook
+    # --- LLM 钩子（实现无空格指令解析 + 前缀可配置） ---
+    @filter.on_llm_request(priority=1919810)
     async def on_llm_request_handler(
         self, event: AstrMessageEvent, req: ProviderRequest
     ):
         """
-        监听 LLM 请求，拦截评分命令（如 /评分千咲, @bot 声骸4c 等）。
-        如果匹配到命令，则停止 LLM 请求并自行处理评分。
+        监听 LLM 请求，拦截评分命令。
+        支持：
+          - 旧：评分/查分/声骸/生蚝 开头
+          - 新：{command_prefix}评分... / {command_prefix}角色评分... / {command_prefix}角色4c...
         """
         text = event.message_str.strip()
 
-        # 正则匹配
-        pattern = r"^(评分|查分|声骸|生蚝)\s*(.*)$"
-        match = re.match(pattern, text, re.IGNORECASE)
-
-        if not match:
-            return  # 未匹配到评分命令，放行给 LLM 处理
-
-        # 匹配成功，拦截事件，阻止 LLM 生成
-        event.stop_event()
-
-        args_str = match.group(2)
         role = None
         cost = None
         main_stat = None
 
-        # 1. 提取 Cost (支持 1c, 3c, 4c, c1, c3, c4, 忽略大小写)
-        cost_match = re.search(r"([134]c|c[134])", args_str, re.IGNORECASE)
-        if cost_match:
-            cost = cost_match.group(1)
-            # 从参数字符串中移除 cost，剩余部分作为角色名/主词条
-            args_str = args_str.replace(cost, "").strip()
+        # 1) 先尝试解析“前缀风格”（ScoreEcho/WWUID）
+        parsed = parse_prefixed_scoreecho_command(text, prefix=self.command_prefix)
+        if parsed:
+            role, cost, main_stat = parsed
+        else:
+            # 2) 兼容旧指令：评分/查分/声骸/生蚝 开头
+            pattern = r"^(评分|查分|声骸|生蚝)\s*(.*)$"
+            match = re.match(pattern, text, re.IGNORECASE)
+            if not match:
+                return  # 未匹配到评分命令，放行给 LLM 处理
 
-        # 2. 提取角色名和主词条
-        # 如果剩余字符串包含空格，尝试分割为 角色 和 主词条
-        # 如果没有空格，则认为剩余部分全是角色名
-        if args_str:
-            parts = args_str.split(maxsplit=1)
-            role = parts[0]
-            if len(parts) > 1:
-                main_stat = parts[1]
+            args_str = match.group(2)
+
+            # 提取 Cost (支持 1c, 3c, 4c, c1, c3, c4)
+            cost_match = re.search(r"([134]c|c[134])", args_str, re.IGNORECASE)
+            if cost_match:
+                cost = _normalize_cost(cost_match.group(1))
+                args_str = args_str.replace(cost_match.group(1), "").strip()
+
+            # 提取角色名和主词条
+            if args_str:
+                parts = args_str.split(maxsplit=1)
+                role = parts[0]
+                if len(parts) > 1:
+                    main_stat = parts[1]
+
+        # 到这里说明：命令已匹配成功（前缀/旧指令任一）
+        event.stop_event()
 
         # 3. 获取图片
         images = await self._get_images_from_context(event)
@@ -374,7 +480,10 @@ class ScoreEchoPlugin(Star):
         # --- 解析角色别名 ---
         resolved_role = self._resolve_role_alias(role)
 
-        parts = [p for p in [resolved_role, cost, main_stat] if p]
+        # cost 也做一次规范化（避免 LLM 给出 c4 之类）
+        normalized_cost = _normalize_cost(cost)
+
+        parts = [p for p in [resolved_role, normalized_cost, main_stat] if p]
         command_str = " ".join(parts)
         result = await self._perform_scoring(command_str, images)
 
@@ -390,4 +499,4 @@ class ScoreEchoPlugin(Star):
 
     async def terminate(self):
         await self.http_client.aclose()
-        logger.info("鸣潮声骸评分插件已关闭")  #
+        logger.info("鸣潮声骸评分插件已关闭")
